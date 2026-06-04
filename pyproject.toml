@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "charity-data-tools"
+version = "0.1.0"
+description = "Python utilities for enriching UK charity and funder data from FTC, UKG, and UKCAT sources."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    { name = "RCVDA", email = "peter.neal@rcvda.org.uk" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "requests",
+    "openpyxl",
+]
+
+[project.urls]
+Source = "https://github.com/rcvda/charity-data-tools"
+Issues = "https://github.com/rcvda/charity-data-tools/issues"
+
+[tool.hatch.version]
+path = "charity_data_tools/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["charity_data_tools"]
