@@ -38,12 +38,24 @@ FTC_ORGID_API = "{}/orgid/{{orgid}}.json".format(FTC_BASE)
 _DEFAULT_DELAY = 0.5
 _DEFAULT_SEARCH_DELAY = 0.3
 _DEFAULT_BATCH_SIZE = 10
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_BACKOFF = 2.0
 _SCORE_HIGH = 90
 _SCORE_LOW = 70
 
 _TRAIL_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _LEADING_THE_RE = re.compile(r"^the\s+")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]")
+
+
+class FTCRequestError(RuntimeError):
+    """Raised when an FTC reconcile/orgid request fails (network error,
+    timeout, or non-200 status) after exhausting retries.
+
+    This lets callers distinguish a *transport failure* from a genuine
+    'no candidates' response, so a timed-out batch is never silently
+    recorded as 'no_match'.
+    """
 
 
 def orgid_from_url(ftc_url: str) -> Optional[str]:
@@ -114,6 +126,8 @@ class FTCClient:
         score_high: int = _SCORE_HIGH,
         score_low: int = _SCORE_LOW,
         batch_size: int = _DEFAULT_BATCH_SIZE,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        backoff: float = _DEFAULT_BACKOFF,
     ) -> None:
         self._owns_session = session is None
         self._session: requests.Session = session or requests.Session()
@@ -122,6 +136,8 @@ class FTCClient:
         self._score_high = score_high
         self._score_low = score_low
         self._batch_size = batch_size
+        self._max_retries = max_retries
+        self._backoff = backoff
         self._alt_names_cache: Dict[str, List[str]] = {}
 
     def __enter__(self) -> "FTCClient":
@@ -162,29 +178,48 @@ class FTCClient:
         """POST a batch of names to the FTC reconcile API.
 
         Returns ``{name: [candidate, ...]}`` where each candidate is an FTC
-        reconcile-API result dict.  Returns an empty dict on any error.
+        reconcile-API result dict.  A name with no candidates maps to ``[]``.
+
+        Transient failures (network error, timeout, or non-200 status) are
+        retried up to ``max_retries`` times with exponential backoff.  If the
+        request still fails, :class:`FTCRequestError` is raised rather than an
+        empty dict being returned, so a transport failure can never be mistaken
+        for a genuine 'no match'.
 
         The polite delay is applied once after the batch.
         """
+        if not names:
+            return {}
         queries = {
             "q{}".format(i): {"query": name, "limit": 5}
             for i, name in enumerate(names)
         }
+        last_err = None
         try:
-            r = self._session.post(
-                FTC_RECONCILE_URL,
-                data={"queries": json.dumps(queries)},
-                timeout=30,
+            for attempt in range(self._max_retries):
+                try:
+                    r = self._session.post(
+                        FTC_RECONCILE_URL,
+                        data={"queries": json.dumps(queries)},
+                        timeout=30,
+                    )
+                    if r.status_code != 200:
+                        last_err = "HTTP {}".format(r.status_code)
+                    else:
+                        data = r.json()
+                        return {
+                            names[int(k[1:])]: v.get("result", [])
+                            for k, v in data.items()
+                        }
+                except Exception as exc:
+                    last_err = str(exc)
+                if attempt < self._max_retries - 1:
+                    time.sleep(self._backoff * (2 ** attempt))
+            raise FTCRequestError(
+                "FTC reconcile failed after {} attempts: {}".format(
+                    self._max_retries, last_err
+                )
             )
-            if r.status_code != 200:
-                return {}
-            data = r.json()
-            return {
-                names[int(k[1:])]: v.get("result", [])
-                for k, v in data.items()
-            }
-        except Exception:
-            return {}
         finally:
             time.sleep(self._search_delay)
 
@@ -267,7 +302,7 @@ class FTCClient:
 
             {
                 "result":  <top reconcile candidate or None>,
-                "verdict": "auto" | "review_high" | "review_low" | "no_match",
+                "verdict": "auto" | "review_high" | "review_low" | "no_match" | "error",
                 "score":   <float>,
                 "name":    <FTC primary name>,
                 "orgid":   <org_id string>,
@@ -280,7 +315,18 @@ class FTCClient:
         results: Dict[str, Dict] = {}
         for start in range(0, len(names), self._batch_size):
             batch = names[start: start + self._batch_size]
-            batch_results = self.search_batch(batch)
+            try:
+                batch_results = self.search_batch(batch)
+            except FTCRequestError as exc:
+                # Transport failure: mark the whole batch 'error' (NEVER
+                # 'no_match') so callers can detect and retry these names.
+                for name in batch:
+                    results[name] = {
+                        "result": None, "verdict": "error", "score": 0,
+                        "name": "", "orgid": "", "ftc_url": "",
+                        "error": str(exc),
+                    }
+                continue
             for name in batch:
                 candidates = batch_results.get(name, [])
                 top = candidates[0] if candidates else None
