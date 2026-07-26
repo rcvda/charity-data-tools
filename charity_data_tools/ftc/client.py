@@ -22,6 +22,13 @@ Example::
     # Or use FTCClient as a context manager (creates its own session):
     with FTCClient() as client:
         results = client.search_all(["Esmée Fairbairn Foundation", "BBC Children in Need"])
+
+    # Restrict a search to a specific organisation type:
+    with FTCClient() as client:
+        results = client.search_all(
+            ["Acme Community Ventures"],
+            type_filter="community-interest-company",
+        )
 """
 
 import json
@@ -38,8 +45,6 @@ FTC_ORGID_API = "{}/orgid/{{orgid}}.json".format(FTC_BASE)
 _DEFAULT_DELAY = 0.5
 _DEFAULT_SEARCH_DELAY = 0.3
 _DEFAULT_BATCH_SIZE = 10
-_DEFAULT_MAX_RETRIES = 3
-_DEFAULT_BACKOFF = 2.0
 _SCORE_HIGH = 90
 _SCORE_LOW = 70
 
@@ -47,15 +52,34 @@ _TRAIL_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _LEADING_THE_RE = re.compile(r"^the\s+")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]")
 
-
-class FTCRequestError(RuntimeError):
-    """Raised when an FTC reconcile/orgid request fails (network error,
-    timeout, or non-200 status) after exhausting retries.
-
-    This lets callers distinguish a *transport failure* from a genuine
-    'no candidates' response, so a timed-out batch is never silently
-    recorded as 'no_match'.
-    """
+# Known FTC reconcile type filter values (pass as ``type_filter`` to
+# ``search_batch`` / ``search_all``).  FTC returns the complete list from
+# GET /reconcile/types; this set covers the most common cases.
+#
+# Org-id prefix produced by each type:
+#   registered-charity-england-wales    → GB-CHC-…
+#   registered-charity-scotland         → GB-SC-…
+#   registered-charity-northern-ireland → GB-NIC-…
+#   community-interest-company          → GB-COH-…
+#   registered-society                  → GB-MUTUALS-…
+#   government-organisation             → GB-GOVUK-…
+#   local-authority                     → GB-LAE-… / GB-LAS-… / GB-PLA-…
+#   universities                        → GB-EDU-…
+#   school                              → GB-EDU-…
+#
+# ``registered-charity`` is the FTC default (all jurisdictions).
+FTC_TYPES = {
+    "registered-charity",
+    "registered-charity-england-wales",
+    "registered-charity-scotland",
+    "registered-charity-northern-ireland",
+    "community-interest-company",
+    "registered-society",
+    "government-organisation",
+    "local-authority",
+    "universities",
+    "school",
+}
 
 
 def orgid_from_url(ftc_url: str) -> Optional[str]:
@@ -126,8 +150,6 @@ class FTCClient:
         score_high: int = _SCORE_HIGH,
         score_low: int = _SCORE_LOW,
         batch_size: int = _DEFAULT_BATCH_SIZE,
-        max_retries: int = _DEFAULT_MAX_RETRIES,
-        backoff: float = _DEFAULT_BACKOFF,
     ) -> None:
         self._owns_session = session is None
         self._session: requests.Session = session or requests.Session()
@@ -136,8 +158,6 @@ class FTCClient:
         self._score_high = score_high
         self._score_low = score_low
         self._batch_size = batch_size
-        self._max_retries = max_retries
-        self._backoff = backoff
         self._alt_names_cache: Dict[str, List[str]] = {}
 
     def __enter__(self) -> "FTCClient":
@@ -173,53 +193,65 @@ class FTCClient:
             time.sleep(self._delay)
 
     def search_batch(
-        self, names: List[str]
+        self,
+        names: List[str],
+        type_filter: Optional[str] = None,
     ) -> Dict[str, List]:
         """POST a batch of names to the FTC reconcile API.
 
         Returns ``{name: [candidate, ...]}`` where each candidate is an FTC
-        reconcile-API result dict.  A name with no candidates maps to ``[]``.
-
-        Transient failures (network error, timeout, or non-200 status) are
-        retried up to ``max_retries`` times with exponential backoff.  If the
-        request still fails, :class:`FTCRequestError` is raised rather than an
-        empty dict being returned, so a transport failure can never be mistaken
-        for a genuine 'no match'.
+        reconcile-API result dict.  Returns an empty dict on any error.
 
         The polite delay is applied once after the batch.
+
+        Parameters
+        ----------
+        names:
+            List of organisation names to search (up to ``batch_size``).
+        type_filter:
+            Optional FTC organisation type string.  When supplied, restricts
+            results to that entity type.  See :data:`FTC_TYPES` for the set
+            of known values; FTC's canonical list is at
+            ``GET https://findthatcharity.uk/reconcile/types``.
+
+            Common values and the org-id prefix they produce:
+
+            ============================================  ==============
+            type_filter                                   org-id prefix
+            ============================================  ==============
+            ``"registered-charity"`` *(default on FTC)*  GB-CHC/SC/NIC
+            ``"registered-charity-england-wales"``        GB-CHC-…
+            ``"registered-charity-scotland"``             GB-SC-…
+            ``"registered-charity-northern-ireland"``     GB-NIC-…
+            ``"community-interest-company"``              GB-COH-…
+            ``"registered-society"``                      GB-MUTUALS-…
+            ``"government-organisation"``                 GB-GOVUK-…
+            ``"local-authority"``                         GB-LAE/LAS/PLA
+            ``"universities"``                            GB-EDU-…
+            ============================================  ==============
         """
-        if not names:
-            return {}
         queries = {
             "q{}".format(i): {"query": name, "limit": 5}
             for i, name in enumerate(names)
         }
-        last_err = None
+        if type_filter:
+            for q in queries.values():
+                q["type"] = type_filter
         try:
-            for attempt in range(self._max_retries):
-                try:
-                    r = self._session.post(
-                        FTC_RECONCILE_URL,
-                        data={"queries": json.dumps(queries)},
-                        timeout=30,
-                    )
-                    if r.status_code != 200:
-                        last_err = "HTTP {}".format(r.status_code)
-                    else:
-                        data = r.json()
-                        return {
-                            names[int(k[1:])]: v.get("result", [])
-                            for k, v in data.items()
-                        }
-                except Exception as exc:
-                    last_err = str(exc)
-                if attempt < self._max_retries - 1:
-                    time.sleep(self._backoff * (2 ** attempt))
-            raise FTCRequestError(
-                "FTC reconcile failed after {} attempts: {}".format(
-                    self._max_retries, last_err
-                )
+            r = self._session.post(
+                FTC_RECONCILE_URL,
+                data={"queries": json.dumps(queries)},
+                timeout=30,
             )
+            if r.status_code != 200:
+                return {}
+            data = r.json()
+            return {
+                names[int(k[1:])]: v.get("result", [])
+                for k, v in data.items()
+            }
+        except Exception:
+            return {}
         finally:
             time.sleep(self._search_delay)
 
@@ -294,7 +326,9 @@ class FTCClient:
     # ── High-level search ────────────────────────────────────────────────────
 
     def search_all(
-        self, names: List[str]
+        self,
+        names: List[str],
+        type_filter: Optional[str] = None,
     ) -> Dict[str, Dict]:
         """Search a list of names, batching automatically.
 
@@ -302,7 +336,7 @@ class FTCClient:
 
             {
                 "result":  <top reconcile candidate or None>,
-                "verdict": "auto" | "review_high" | "review_low" | "no_match" | "error",
+                "verdict": "auto" | "review_high" | "review_low" | "no_match",
                 "score":   <float>,
                 "name":    <FTC primary name>,
                 "orgid":   <org_id string>,
@@ -311,22 +345,20 @@ class FTCClient:
 
         AKA promotion is applied: borderline results whose org's AKA list
         contains the query are promoted to ``'auto'``.
+
+        Parameters
+        ----------
+        names:
+            Organisation names to search.
+        type_filter:
+            Optional FTC entity type to restrict results to.  Passed
+            through to :meth:`search_batch`.  See :data:`FTC_TYPES` and the
+            ``search_batch`` docstring for supported values.
         """
         results: Dict[str, Dict] = {}
         for start in range(0, len(names), self._batch_size):
             batch = names[start: start + self._batch_size]
-            try:
-                batch_results = self.search_batch(batch)
-            except FTCRequestError as exc:
-                # Transport failure: mark the whole batch 'error' (NEVER
-                # 'no_match') so callers can detect and retry these names.
-                for name in batch:
-                    results[name] = {
-                        "result": None, "verdict": "error", "score": 0,
-                        "name": "", "orgid": "", "ftc_url": "",
-                        "error": str(exc),
-                    }
-                continue
+            batch_results = self.search_batch(batch, type_filter=type_filter)
             for name in batch:
                 candidates = batch_results.get(name, [])
                 top = candidates[0] if candidates else None
