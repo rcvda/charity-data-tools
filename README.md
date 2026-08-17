@@ -9,7 +9,7 @@ Python utilities for enriching UK charity and funder data from three public sour
 ## Installation
 
 ```bash
-pip install git+https://github.com/rcvda/charity-data-tools.git
+pip install git+ssh://git@github.com/rcvda/charity-data-tools.git
 ```
 
 Requires Python 3.9+. Dependencies: `requests`, `openpyxl`.
