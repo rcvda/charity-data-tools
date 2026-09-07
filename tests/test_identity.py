@@ -132,3 +132,24 @@ def test_write_review_csv(tmp_path):
     cascade.write_review_csv(res, str(p))
     rows = list(csv.DictReader(open(p)))
     assert len(rows) == 2 and "confirmed_org_id" in rows[0]
+
+
+def test_classify_company_suffix_aware():
+    active = {"title": "WB CONSTRUCTION LTD", "company_status": "active"}
+    assert cascade.classify_company(active, "WB Construction") == "auto"
+    assert cascade.classify_company({"title": "HITACHI ENERGY UK LIMITED", "company_status": "active"},
+                                    "Hitachi Energy") == "auto"
+    assert cascade.classify_company({"title": "WB CONSTRUCTION LTD", "company_status": "dissolved"},
+                                    "WB Construction") == "review"
+    assert cascade.classify_company({"title": "RYDER IRLAM ARCHITECTS LTD", "company_status": "active"},
+                                    "Ryder Architects") == "review"
+
+
+def test_stage3_review_noise_is_dropped():
+    ftc = FakeFTC(
+        {"community-interest-company": {"Beacon Mines":
+            {"verdict": "review_low", "orgid": "GB-CHC-1083008",
+             "name": "The Mines Advisory Group", "score": 30}}},
+        {})
+    res = cascade.resolve_names(["Beacon Mines"], ftc)
+    assert res[0]["org_id"] == "" and res[0]["candidates"] == []

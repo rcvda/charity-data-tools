@@ -11,4 +11,5 @@
 - Add `ftc.extract.extract_identifiers()` — harvest the full identifier set
   (`orgIDs`/`linked_records`/`charityNumber`/`companyNumber`) from an `/orgid`
   record.
+- Companies House matching is suffix-aware (Ltd/Limited/PLC ignored) and low-confidence FTC reconcile noise is discarded, not surfaced.
 - Add test suite (HTTP fully mocked; no live key required).
