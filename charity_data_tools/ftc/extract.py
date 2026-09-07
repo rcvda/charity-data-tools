@@ -129,3 +129,51 @@ def _clean_email(raw: str) -> str:
     if s.startswith("mailto:"):
         s = s[len("mailto:"):]
     return s
+
+
+def extract_identifiers(data: Dict) -> Dict[str, object]:
+    """Harvest the full identifier set from an FTC ``/orgid/{id}.json`` record.
+
+    FTC federates the org-id.guide scheme and stores *multiple* identifiers per
+    legal entity: a charitable company exposes both its ``GB-CHC`` and
+    ``GB-COH`` codes, which cross-validate each other. This returns every
+    identifier the record carries so they can be stored on one canonical node.
+
+    Returns a dict with keys ``org_ids`` (deduped, order-preserved list),
+    ``charity_number``, ``company_number``, ``org_type_primary`` and
+    ``org_types``. Never raises; missing fields yield empty values.
+    """
+    ids = []  # type: List[str]
+
+    raw = data.get("orgIDs")
+    if isinstance(raw, list):
+        ids.extend(str(x).strip() for x in raw if x)
+
+    for lr in (data.get("linked_records") or []):
+        if isinstance(lr, dict):
+            oid = (lr.get("orgid") or lr.get("orgId") or "").strip()
+            if oid:
+                ids.append(oid)
+
+    seen = set()
+    org_ids = []  # type: List[str]
+    for i in ids:
+        if i and i not in seen:
+            seen.add(i)
+            org_ids.append(i)
+
+    types = data.get("organisationType")
+    if isinstance(types, list):
+        org_types = [str(t).strip() for t in types if t]
+    elif types:
+        org_types = [str(types).strip()]
+    else:
+        org_types = []
+
+    return {
+        "org_ids": org_ids,
+        "charity_number": str(data.get("charityNumber") or "").strip(),
+        "company_number": str(data.get("companyNumber") or "").strip(),
+        "org_type_primary": (data.get("organisationTypePrimary") or "").strip(),
+        "org_types": org_types,
+    }

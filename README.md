@@ -94,3 +94,44 @@ See `a project wrapper script` in the Ashvale grants-directory project for a wor
 ## Licence
 
 MIT
+
+### `charity_data_tools.ch`
+
+Companies House Public Data API client — Stage 4 of the identity cascade, for
+the ordinary private companies FTC does not hold.
+
+```python
+from charity_data_tools.ch import CHClient
+with CHClient() as ch:                      # key from env, or CHClient(api_key=...)
+    matches = ch.search_companies("Ryder Architects")
+```
+
+#### Providing a Companies House key
+
+This is a **public repository — never commit a key.** The client takes the key
+by injection or environment:
+
+- pass `CHClient(api_key="…")`, or
+- set `COMPANIES_HOUSE_API_KEY` in your environment (a local `.env` — gitignored
+  — or a CI secret). Copy `.env.example` to `.env` to start.
+
+Missing key raises `CHKeyMissing` with guidance. The key is used only as HTTPS
+Basic-auth and is never logged. Free key: https://developer.company-information.service.gov.uk/
+
+### `charity_data_tools.identity`
+
+Generalised organisation identity resolution cascade (Stages 1/3/4 + identifier
+harvest) — resolve any list of organisation names to canonical org-ids.
+
+```python
+from charity_data_tools.ftc.client import FTCClient
+from charity_data_tools.ch import CHClient
+from charity_data_tools.identity import resolve_names, write_review_csv
+
+with FTCClient() as ftc, CHClient() as ch:
+    results = resolve_names(["Anglo American", "Tree Council"], ftc, ch=ch)
+write_review_csv(results, "org_id_review.csv")   # propose → grade → confirm
+```
+
+Stage 2 (bulk type-register pulls) is deferred pending confirmation of FTC's
+`/orgid/type/{slug}` export endpoint (see the cascade spec).
