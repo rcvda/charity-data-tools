@@ -9,3 +9,8 @@ env/
 *.xlsx
 *.csv
 .DS_Store
+
+# API response caches (never commit)
+cache/
+*/cache/
+projects/*/cache/
