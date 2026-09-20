@@ -324,9 +324,9 @@ class FTCClient:
         alts = self.alt_names_for(orgid)
         query_norm = normalise_for_match(query_name)
         # Exact editorial equality, OR the query's core tokens fully contained in
-        # an alias — so a trading/brand name registered as an FTC alias (e.g.
-        # "Harbour Supported Living" as an alias of the Harbour parent) is
-        # recognised even when it is shorter than the alias.
+        # an alias — so a trading/brand name registered as an FTC alias (e.g. a
+        # "… Supported Living" brand registered as an alias of its housing
+        # parent) is recognised even when it is shorter than the alias.
         return any(
             normalise_for_match(a) == query_norm or contains(query_name, a)
             for a in alts

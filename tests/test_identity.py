@@ -107,11 +107,11 @@ def test_stage1_deterministic():
 def test_stage3_typed_auto():
     ftc = FakeFTC(
         {"local-authority": {"Ashvale and Dale Borough Council":
-            {"verdict": "auto", "orgid": "GB-LAE-RCC", "name": "Ashvale and Dale",
+            {"verdict": "auto", "orgid": "GB-LAE-XXX", "name": "Ashvale and Dale",
              "ftc_url": "u", "score": 100}}},
-        {"GB-LAE-RCC": {"orgIDs": ["GB-LAE-RCC"], "organisationTypePrimary": "Local Authority"}})
+        {"GB-LAE-XXX": {"orgIDs": ["GB-LAE-XXX"], "organisationTypePrimary": "Local Authority"}})
     res = cascade.resolve_names(["Ashvale and Dale Borough Council"], ftc)
-    assert res[0]["source_stage"] == "stage3" and res[0]["org_id"] == "GB-LAE-RCC"
+    assert res[0]["source_stage"] == "stage3" and res[0]["org_id"] == "GB-LAE-XXX"
 
 
 def test_stage4_companies_house_auto():
@@ -149,10 +149,10 @@ def test_classify_company_suffix_aware():
 
 
 def test_stage3_review_noise_is_dropped():
-    # No shared real tokens (Beacon absent from candidate; overlap 0.33) → dropped.
+    # No shared distinctive tokens (query's own name absent; overlap ~0.33) → dropped.
     ftc = FakeFTC(
         {"community-interest-company": {"Beacon Mines":
-            {"verdict": "review_low", "orgid": "GB-CHC-1083008",
+            {"verdict": "review_low", "orgid": "GB-CHC-0000008",
              "name": "The Mines Advisory Group", "score": 30}}},
         {})
     res = cascade.resolve_names(["Beacon Mines"], ftc)
@@ -160,61 +160,96 @@ def test_stage3_review_noise_is_dropped():
 
 
 def test_stage3_single_token_containment_surfaced_as_review():
-    # "Acme Group" (core {Acme}) is contained in the registered name but
-    # carries only one distinctive token → surfaced as a review PROPOSAL, not auto.
+    # "Acme Group" (core {acme}) is contained in the registered name but carries
+    # only one distinctive token → surfaced as a review PROPOSAL, not auto.
     ftc = FakeFTC(
         {"registered-society": {"Acme Group":
-            {"verdict": "review_high", "orgid": "GB-MPR-7522",
+            {"verdict": "review_high", "orgid": "GB-MPR-0000001",
              "name": "Acme Housing Group Limited", "ftc_url": "u", "score": 92}}},
-        {"GB-MPR-7522": {"orgIDs": ["GB-MPR-7522"],
-                         "organisationTypePrimary": "Registered Society"}})
+        {"GB-MPR-0000001": {"orgIDs": ["GB-MPR-0000001"],
+                            "organisationTypePrimary": "Registered Society"}})
     res = cascade.resolve_names(["Acme Group"], ftc)
     assert res[0]["confidence"] == "review"
-    assert res[0]["org_id"] == "GB-MPR-7522"
+    assert res[0]["org_id"] == "GB-MPR-0000001"
     assert res[0]["source_stage"] == "stage3"
 
 
 def test_stage3_multitoken_containment_auto():
-    # "North East Migration Partnership" (>=2 distinctive tokens) fully contained
-    # in the registered name → auto-accepted.
+    # "Coast Migration Partnership" (>=2 distinctive tokens) fully contained in
+    # the registered name → auto-accepted.
     ftc = FakeFTC(
-        {"government-organisation": {"North East Migration Partnership":
-            {"verdict": "review_high", "orgid": "GB-GOVUK-nemp",
-             "name": "North East Strategic Migration Partnership", "ftc_url": "u", "score": 88}}},
-        {"GB-GOVUK-nemp": {"orgIDs": ["GB-GOVUK-nemp"],
-                           "organisationTypePrimary": "Government Organisation"}})
-    res = cascade.resolve_names(["North East Migration Partnership"], ftc)
+        {"government-organisation": {"Coast Migration Partnership":
+            {"verdict": "review_high", "orgid": "GB-GOVUK-cmp",
+             "name": "Coast Strategic Migration Partnership", "ftc_url": "u", "score": 88}}},
+        {"GB-GOVUK-cmp": {"orgIDs": ["GB-GOVUK-cmp"],
+                          "organisationTypePrimary": "Government Organisation"}})
+    res = cascade.resolve_names(["Coast Migration Partnership"], ftc)
     assert res[0]["confidence"] == "auto"
-    assert res[0]["org_id"] == "GB-GOVUK-nemp"
+    assert res[0]["org_id"] == "GB-GOVUK-cmp"
 
 
 def test_stage3_partial_overlap_surfaced_as_review():
-    # Not contained, but strong token overlap (>=0.5) → review proposal, not dropped.
+    # Not contained, but strong distinctive token overlap (>=0.5) → review.
     ftc = FakeFTC(
         {"registered-society": {"Coast Community Housing":
-            {"verdict": "review_high", "orgid": "GB-MPR-9999",
-             "name": "Coast & Country Housing", "ftc_url": "u", "score": 80}}},
-        {"GB-MPR-9999": {"orgIDs": ["GB-MPR-9999"],
-                         "organisationTypePrimary": "Registered Society"}})
+            {"verdict": "review_high", "orgid": "GB-MPR-0000009",
+             "name": "Coast Country Housing", "ftc_url": "u", "score": 80}}},
+        {"GB-MPR-0000009": {"orgIDs": ["GB-MPR-0000009"],
+                            "organisationTypePrimary": "Registered Society"}})
     res = cascade.resolve_names(["Coast Community Housing"], ftc)
-    assert res[0]["confidence"] == "review" and res[0]["org_id"] == "GB-MPR-9999"
+    assert res[0]["confidence"] == "review" and res[0]["org_id"] == "GB-MPR-0000009"
+
+
+def test_stage3_geography_stopword_overlap_dropped():
+    # Shares only place-name tokens + the stopword "and" with a council; once
+    # "and" is stripped the overlap falls below threshold → dropped, not proposed.
+    ftc = FakeFTC(
+        {"local-authority": {"Watchbody Ashvale and Dale":
+            {"verdict": "review_high", "orgid": "GB-LAE-XXX",
+             "name": "Ashvale and Dale Borough Council", "ftc_url": "u", "score": 93}}},
+        {"GB-LAE-XXX": {"orgIDs": ["GB-LAE-XXX"]}})
+    res = cascade.resolve_names(["Watchbody Ashvale and Dale"], ftc)
+    assert res[0]["org_id"] == "" and res[0]["candidates"] == []
+
+
+def test_stage3_category_pattern_match_dropped():
+    # "Friends of X Cemetery" pattern — shares only generic category words.
+    ftc = FakeFTC(
+        {"registered-charity": {"Friends of Ashvale Cemetery":
+            {"verdict": "review_high", "orgid": "GB-CHC-0000002",
+             "name": "Friends of Beacon Cemetery Trust", "ftc_url": "u", "score": 81}}},
+        {"GB-CHC-0000002": {"orgIDs": ["GB-CHC-0000002"]}})
+    res = cascade.resolve_names(["Friends of Ashvale Cemetery"], ftc)
+    assert res[0]["org_id"] == ""
+
+
+def test_stage3_generic_only_containment_dropped():
+    # Containment BUT the shared tokens are all generic ("wellbeing", "centre")
+    # → the distinctive-token guard blocks it (would auto-match without the guard).
+    ftc = FakeFTC(
+        {"registered-society": {"Wellbeing Centre":
+            {"verdict": "review_high", "orgid": "GB-CHC-0000003",
+             "name": "Meridian Wellbeing Centre", "ftc_url": "u", "score": 85}}},
+        {"GB-CHC-0000003": {"orgIDs": ["GB-CHC-0000003"]}})
+    res = cascade.resolve_names(["Wellbeing Centre"], ftc)
+    assert res[0]["org_id"] == ""
 
 
 def test_stage3_brand_resolves_via_alias():
-    # Query is a BRAND ("Harbour Supported Living"); the reconcile candidate's
-    # primary name is the parent ("Harbour Housing Association") which the query
-    # is NOT contained in — but the brand IS an FTC alias of the parent, so
-    # alias cross-referencing resolves it (>=2 tokens contained in alias → auto).
+    # Query is a BRAND ("Harbour Supported Living"); the candidate's primary name
+    # is the parent ("Harbour Housing Association"), which the query is NOT
+    # contained in — but the brand IS an FTC alias of the parent, so alias
+    # cross-referencing resolves it (>=2 tokens contained in alias → auto).
     ftc = FakeFTC(
         {"registered-society": {"Harbour Supported Living":
-            {"verdict": "review_high", "orgid": "GB-MPR-19059R",
+            {"verdict": "review_high", "orgid": "GB-MPR-0000042",
              "name": "Harbour Housing Association", "ftc_url": "u", "score": 78}}},
-        {"GB-MPR-19059R": {"orgIDs": ["GB-MPR-19059R"],
-                           "organisationTypePrimary": "Registered Society"}},
-        aliases={"GB-MPR-19059R": ["Harbour Supported Living", "Harbour Group"]})
+        {"GB-MPR-0000042": {"orgIDs": ["GB-MPR-0000042"],
+                            "organisationTypePrimary": "Registered Society"}},
+        aliases={"GB-MPR-0000042": ["Harbour Supported Living", "Harbour Group"]})
     res = cascade.resolve_names(["Harbour Supported Living"], ftc)
     assert res[0]["confidence"] == "auto"
-    assert res[0]["org_id"] == "GB-MPR-19059R"
+    assert res[0]["org_id"] == "GB-MPR-0000042"
     assert res[0]["matched_name"] == "Harbour Housing Association"
 
 
@@ -223,7 +258,7 @@ def test_stage4_upgrades_stage3_review_to_auto():
     # Companies House exact match then upgrades it to auto (CH wins).
     ftc = FakeFTC(
         {"registered-society": {"Acme":
-            {"verdict": "review_high", "orgid": "GB-MPR-1", "name": "Acme Housing Society",
+            {"verdict": "review_high", "orgid": "GB-MPR-0000001", "name": "Acme Housing Society",
              "ftc_url": "u", "score": 80}}},
         {"GB-COH-01234567": {"orgIDs": ["GB-COH-01234567"]}})
     ch = FakeCH({"Acme": [{"company_number": "01234567",

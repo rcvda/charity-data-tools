@@ -23,7 +23,8 @@ import re
 from typing import Dict, List, Optional
 
 from ..ftc.extract import extract_identifiers
-from ..ftc.match import core_tokens, contains, token_overlap, contains_any, best_overlap
+from ..ftc.match import (core_tokens, contains, token_overlap, contains_any,
+                         best_overlap, shares_distinctive_any)
 from ..ch.client import orgid_from_company_number
 
 # Non-charity FTC reconcile types, precision-ordered. The charity register is
@@ -40,7 +41,7 @@ _VERDICT_RANK = {"auto": 3, "review_high": 2, "review_low": 1, "no_match": 0}
 # A typed reconcile hit is only surfaced as a review PROPOSAL when it shares real
 # name tokens with the query — full containment, or at least this Jaccard overlap
 # of core tokens. Below it, a same-type score-based hit is treated as noise and
-# dropped (e.g. "Beacon Mines" -> "The Mines Advisory Group").
+# dropped (a same-word false match like "X Mines" -> "The Mines Advisory Group").
 REVIEW_OVERLAP_MIN = 0.5
 
 
@@ -86,7 +87,7 @@ def _candidate_names(ftc, orgid: str, primary: str) -> List[str]:
     """Registered name + FTC alternateName aliases for a candidate org.
 
     Cross-referencing against aliases lets a trading/brand name registered as an
-    alias resolve to its parent ("Harbour Supported Living" -> the Harbour
+    alias resolve to its parent (a "… Supported Living" brand -> its housing
     parent). Aliases are fetched lazily and cached by the client; a stub without
     ``alt_names_for`` (or a network error) simply yields the primary name.
     """
@@ -163,18 +164,18 @@ def resolve_names(names, ftc, ch=None, held: Optional[Dict] = None,
     #   auto    — FTC's own match=True / exact-normalised name (verdict "auto"),
     #             OR a *distinctive multi-token containment* of the query in the
     #             candidate name (trading name fully inside the registered name,
-    #             query carries >=2 distinctive tokens: "North East Migration
-    #             Partnership" in "North East Strategic Migration Partnership").
+    #             query carries >=2 distinctive tokens: "Coast Migration
+    #             Partnership" in "Coast Strategic Migration Partnership").
     #   review  — a same-type reconcile hit that ALSO shares real name tokens
     #             with the query (containment, or Jaccard token overlap >=
     #             REVIEW_OVERLAP_MIN). Previously discarded; now surfaced as a
     #             confirm-me PROPOSAL with its org_id, so a real match
-    #             ("Acme Group" -> "Acme Housing Group Limited", one
-    #             distinctive shared token) becomes a one-glance confirmation
-    #             instead of a dead-end no_match.
+    #             ("Acme Group" -> "Acme Housing Group Limited", one distinctive
+    #             shared token) becomes a one-glance confirmation instead of a
+    #             dead-end no_match.
     #   nothing — everything else: a bare score-based reconcile hit that shares
-    #             no real tokens ("Beacon Mines" -> "The Mines Advisory Group")
-    #             is the same-word noise the typed search still emits — dropped.
+    #             no real tokens (a "… Mines" query -> "The Mines Advisory
+    #             Group") is the same-word noise typed search emits — dropped.
     # Gating surfacing on shared TOKENS, not on FTC score alone, is what keeps
     # the noise guard intact. Names not auto-resolved still go to Stage 4.
     still: List[str] = []
@@ -183,17 +184,21 @@ def resolve_names(names, ftc, ch=None, held: Optional[Dict] = None,
         orgid = r0.get("orgid", "") or ""
         cand_name = r0.get("name", "") or ""
         verdict = r0.get("verdict", "no_match")
+        if not orgid:
+            still.append(n)
+            continue
         # Cross-reference the query against the candidate's registered name AND
-        # its aliases. Check the primary name first (no fetch); only pull aliases
-        # when the primary alone doesn't already contain the query.
-        contained = bool(orgid and cand_name and contains(n, cand_name))
-        overlap = token_overlap(n, cand_name) if cand_name else 0.0
-        if orgid and not contained:
-            cand_names = _candidate_names(ftc, orgid, cand_name)
-            contained = contains_any(n, cand_names)
-            overlap = max(overlap, best_overlap(n, cand_names))
-        distinctive = contained and len(core_tokens(n)) >= 2
-        if orgid and (verdict == "auto" or distinctive):
+        # its aliases (aliases catch trading/brand names). Every match must also
+        # rest on a DISTINCTIVE shared token — not just geography or category
+        # words — or it is place/category noise and is dropped (a consumer body
+        # named "… <Place>" vs the "<Place> Borough Council"; "Friends of
+        # <Place> Cemetery" vs "Friends of <Other> Cemetery").
+        cand_names = _candidate_names(ftc, orgid, cand_name)
+        contained = contains_any(n, cand_names)
+        overlap = best_overlap(n, cand_names)
+        distinctive_shared = shares_distinctive_any(n, cand_names)
+        auto_contained = contained and len(core_tokens(n)) >= 2 and distinctive_shared
+        if verdict == "auto" or auto_contained:
             ids = _harvest(ftc, orgid)
             r = results[n]
             r.update(source_stage="stage3", confidence="auto", org_id=orgid,
@@ -202,8 +207,8 @@ def resolve_names(names, ftc, ch=None, held: Optional[Dict] = None,
             r["candidates"].append({"org_id": orgid, "name": cand_name,
                                     "verdict": "auto" if verdict == "auto" else "auto-contained"})
         else:
-            share = contained or overlap >= REVIEW_OVERLAP_MIN
-            if orgid and verdict in ("review_high", "review_low") and share:
+            share = (contained or overlap >= REVIEW_OVERLAP_MIN) and distinctive_shared
+            if verdict in ("review_high", "review_low") and share:
                 # Surface as a proposal (do not auto-apply); Stage 4 may upgrade.
                 r = results[n]
                 r.update(source_stage="stage3", confidence="review", org_id=orgid,
