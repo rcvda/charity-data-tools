@@ -14,3 +14,5 @@ env/
 cache/
 */cache/
 projects/*/cache/
+CLAUDE.md
+projects/
