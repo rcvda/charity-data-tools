@@ -83,7 +83,7 @@ Each project using this library supplies its own thin wrapper script that:
 2. Calls library functions with the resulting data
 3. Writes results back using its own column names
 
-See `a project wrapper script` in the Ashvale grants-directory project for a worked example.
+Each consuming project keeps its own wrapper of this kind; the library itself is data-agnostic.
 
 ## Data sources
 
