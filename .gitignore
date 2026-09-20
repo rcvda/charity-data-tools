@@ -16,3 +16,4 @@ cache/
 projects/*/cache/
 CLAUDE.md
 projects/
+.githooks/denylist.txt

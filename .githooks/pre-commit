@@ -1,28 +1,42 @@
 #!/bin/sh
 # pre-commit guard — this repository is PUBLIC and holds the general-purpose
-# tool only. Real organisation names, local file paths, River Valley place-names,
-# internal references and API keys must never be committed. Keep all RCVDA
-# operational data in the gitignored projects/ directory.
+# tool only. Operational data (real organisation names, absolute file paths,
+# local place-names, internal references, API keys) must never be committed;
+# keep it in the gitignored projects/ directory.
+#
+# The specific project terms to block live in .githooks/denylist.txt — a
+# gitignored, per-clone file (one extended-regex fragment per line; blank lines
+# and # comments ignored). It is deliberately NOT committed, so this public
+# hook contains no locality or organisation names. If the file is absent the
+# guard still blocks absolute home paths and assigned API keys.
 #
 # Enable once per clone:  git config core.hooksPath .githooks
-# Genuine false positive:  git commit --no-verify  (use sparingly, look first)
+# Genuine false positive:  git commit --no-verify   (editing this hook needs it)
 
-staged=$(git diff --cached --name-only)
-[ -z "$staged" ] && exit 0
+added=$(git diff --cached -U0 | grep -E '^\+' | grep -v '^\+\+\+')
+[ -z "$added" ] && exit 0
 
-# Denylist of operational markers, scanned against ADDED lines only.
-pattern='(/Users/|Example-Host|user|\bAshvale\b|\bDale\b|Coastshire|Coast|Porthaven|Brookton|Westbrook|River Valley|grants-directory|build-session|COMPANIES_HOUSE_API_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9])'
+# Always-on baseline: absolute home paths and an assigned API key value.
+base='(/Users/|/home/[a-z]|COMPANIES_HOUSE_API_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9])'
+hits=$(printf '%s\n' "$added" | grep -Ein "$base")
 
-hits=$(git diff --cached -U0 | grep -E '^\+' | grep -v '^\+\+\+' | grep -Ein "$pattern")
+# Project-specific terms, from the local (gitignored) denylist if present.
+dl="$(git rev-parse --show-toplevel)/.githooks/denylist.txt"
+if [ -f "$dl" ]; then
+  terms=$(grep -vE '^[[:space:]]*(#|$)' "$dl" | paste -sd '|' -)
+  if [ -n "$terms" ]; then
+    more=$(printf '%s\n' "$added" | grep -Ein "$terms")
+    hits=$(printf '%s\n%s\n' "$hits" "$more" | grep -v '^[[:space:]]*$')
+  fi
+fi
 
 if [ -n "$hits" ]; then
   echo "" >&2
   echo "pre-commit BLOCKED — staged changes contain operational/private markers:" >&2
-  echo "$hits" | head -20 >&2
+  printf '%s\n' "$hits" | head -20 >&2
   echo "" >&2
-  echo "This repo is PUBLIC: the general tool only. Put RCVDA-specific data, scripts" >&2
-  echo "and paths in the gitignored projects/ directory instead." >&2
-  echo "If this is a genuine false positive, re-run with:  git commit --no-verify" >&2
+  echo "This repo is PUBLIC: the general tool only. Put operational data in the" >&2
+  echo "gitignored projects/ directory. Genuine false positive: git commit --no-verify" >&2
   echo "" >&2
   exit 1
 fi
