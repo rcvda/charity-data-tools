@@ -23,6 +23,7 @@ import re
 from typing import Dict, List, Optional
 
 from ..ftc.extract import extract_identifiers
+from ..ftc.match import core_tokens, contains, token_overlap, contains_any, best_overlap
 from ..ch.client import orgid_from_company_number
 
 # Non-charity FTC reconcile types, precision-ordered. The charity register is
@@ -35,6 +36,12 @@ DEFAULT_TYPES = [
 ]
 
 _VERDICT_RANK = {"auto": 3, "review_high": 2, "review_low": 1, "no_match": 0}
+
+# A typed reconcile hit is only surfaced as a review PROPOSAL when it shares real
+# name tokens with the query — full containment, or at least this Jaccard overlap
+# of core tokens. Below it, a same-type score-based hit is treated as noise and
+# dropped (e.g. "Beacon Mines" -> "The Mines Advisory Group").
+REVIEW_OVERLAP_MIN = 0.5
 
 
 def normalise_name(s: str) -> str:
@@ -58,16 +65,6 @@ def _better(a: Optional[Dict], b: Optional[Dict]) -> Optional[Dict]:
     return a
 
 
-# Legal-form and filler tokens ignored when comparing an org name to a
-# Companies House registered name ("WB Construction" == "WB CONSTRUCTION LTD").
-_LEGAL_TOKENS = {"ltd", "limited", "plc", "llp", "lp", "cic", "cio", "co",
-                 "company", "uk", "the", "group", "holdings", "inc", "llc"}
-
-
-def _core_tokens(s: str):
-    return set(t for t in normalise_name(s).split() if t not in _LEGAL_TOKENS)
-
-
 def classify_company(candidate: Dict, query_name: str) -> str:
     """Grade a Companies House candidate.
 
@@ -81,8 +78,26 @@ def classify_company(candidate: Dict, query_name: str) -> str:
     active = (candidate.get("company_status", "") or "").lower() == "active"
     if not active:
         return "review"
-    ct, qt = _core_tokens(candidate.get("title", "")), _core_tokens(query_name)
+    ct, qt = core_tokens(candidate.get("title", "")), core_tokens(query_name)
     return "auto" if (qt and ct and qt == ct) else "review"
+
+
+def _candidate_names(ftc, orgid: str, primary: str) -> List[str]:
+    """Registered name + FTC alternateName aliases for a candidate org.
+
+    Cross-referencing against aliases lets a trading/brand name registered as an
+    alias resolve to its parent ("Harbour Supported Living" -> the Harbour
+    parent). Aliases are fetched lazily and cached by the client; a stub without
+    ``alt_names_for`` (or a network error) simply yields the primary name.
+    """
+    names = [primary] if primary else []
+    getter = getattr(ftc, "alt_names_for", None)
+    if orgid and callable(getter):
+        try:
+            names += list(getter(orgid) or [])
+        except Exception:
+            pass
+    return names
 
 
 def _harvest(ftc, orgid: str) -> Dict:
@@ -144,21 +159,56 @@ def resolve_names(names, ftc, ch=None, held: Optional[Dict] = None,
             res = ftc.search_all(unresolved, type_filter=tf)
             for n in unresolved:
                 best[n] = _better(best[n], res.get(n))
-    # Only an exact/auto FTC match is trusted. Low-confidence reconcile results
-    # are discarded, not surfaced: for non-charity names FTC returns same-named
-    # charities (Beacon Mines -> a mines charity), which are noise, not proposals.
+    # Grade the best typed candidate. Three outcomes, in precision order:
+    #   auto    — FTC's own match=True / exact-normalised name (verdict "auto"),
+    #             OR a *distinctive multi-token containment* of the query in the
+    #             candidate name (trading name fully inside the registered name,
+    #             query carries >=2 distinctive tokens: "North East Migration
+    #             Partnership" in "North East Strategic Migration Partnership").
+    #   review  — a same-type reconcile hit that ALSO shares real name tokens
+    #             with the query (containment, or Jaccard token overlap >=
+    #             REVIEW_OVERLAP_MIN). Previously discarded; now surfaced as a
+    #             confirm-me PROPOSAL with its org_id, so a real match
+    #             ("Acme Group" -> "Acme Housing Group Limited", one
+    #             distinctive shared token) becomes a one-glance confirmation
+    #             instead of a dead-end no_match.
+    #   nothing — everything else: a bare score-based reconcile hit that shares
+    #             no real tokens ("Beacon Mines" -> "The Mines Advisory Group")
+    #             is the same-word noise the typed search still emits — dropped.
+    # Gating surfacing on shared TOKENS, not on FTC score alone, is what keeps
+    # the noise guard intact. Names not auto-resolved still go to Stage 4.
     still: List[str] = []
     for n in unresolved:
         r0 = best.get(n) or {}
         orgid = r0.get("orgid", "") or ""
-        if r0.get("verdict") == "auto" and orgid:
+        cand_name = r0.get("name", "") or ""
+        verdict = r0.get("verdict", "no_match")
+        # Cross-reference the query against the candidate's registered name AND
+        # its aliases. Check the primary name first (no fetch); only pull aliases
+        # when the primary alone doesn't already contain the query.
+        contained = bool(orgid and cand_name and contains(n, cand_name))
+        overlap = token_overlap(n, cand_name) if cand_name else 0.0
+        if orgid and not contained:
+            cand_names = _candidate_names(ftc, orgid, cand_name)
+            contained = contains_any(n, cand_names)
+            overlap = max(overlap, best_overlap(n, cand_names))
+        distinctive = contained and len(core_tokens(n)) >= 2
+        if orgid and (verdict == "auto" or distinctive):
             ids = _harvest(ftc, orgid)
             r = results[n]
             r.update(source_stage="stage3", confidence="auto", org_id=orgid,
-                     matched_name=r0.get("name", ""), ftc_url=r0.get("ftc_url", ""),
+                     matched_name=cand_name, ftc_url=r0.get("ftc_url", ""),
                      org_type=ids.get("org_type_primary", ""), identifiers=ids.get("org_ids", []))
-            r["candidates"].append({"org_id": orgid, "name": r0.get("name", ""), "verdict": "auto"})
+            r["candidates"].append({"org_id": orgid, "name": cand_name,
+                                    "verdict": "auto" if verdict == "auto" else "auto-contained"})
         else:
+            share = contained or overlap >= REVIEW_OVERLAP_MIN
+            if orgid and verdict in ("review_high", "review_low") and share:
+                # Surface as a proposal (do not auto-apply); Stage 4 may upgrade.
+                r = results[n]
+                r.update(source_stage="stage3", confidence="review", org_id=orgid,
+                         matched_name=cand_name, ftc_url=r0.get("ftc_url", ""))
+                r["candidates"].append({"org_id": orgid, "name": cand_name, "verdict": verdict})
             still.append(n)
 
     # ── Stage 4: Companies House for the for-profit residue ─────────────────
