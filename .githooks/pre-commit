@@ -1,0 +1,29 @@
+#!/bin/sh
+# pre-commit guard — this repository is PUBLIC and holds the general-purpose
+# tool only. Real organisation names, local file paths, River Valley place-names,
+# internal references and API keys must never be committed. Keep all RCVDA
+# operational data in the gitignored projects/ directory.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Genuine false positive:  git commit --no-verify  (use sparingly, look first)
+
+staged=$(git diff --cached --name-only)
+[ -z "$staged" ] && exit 0
+
+# Denylist of operational markers, scanned against ADDED lines only.
+pattern='(/Users/|Example-Host|user|\bAshvale\b|\bDale\b|Coastshire|Coast|Porthaven|Brookton|Westbrook|River Valley|grants-directory|build-session|COMPANIES_HOUSE_API_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9])'
+
+hits=$(git diff --cached -U0 | grep -E '^\+' | grep -v '^\+\+\+' | grep -Ein "$pattern")
+
+if [ -n "$hits" ]; then
+  echo "" >&2
+  echo "pre-commit BLOCKED — staged changes contain operational/private markers:" >&2
+  echo "$hits" | head -20 >&2
+  echo "" >&2
+  echo "This repo is PUBLIC: the general tool only. Put RCVDA-specific data, scripts" >&2
+  echo "and paths in the gitignored projects/ directory instead." >&2
+  echo "If this is a genuine false positive, re-run with:  git commit --no-verify" >&2
+  echo "" >&2
+  exit 1
+fi
+exit 0
