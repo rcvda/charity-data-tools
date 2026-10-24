@@ -135,3 +135,26 @@ write_review_csv(results, "org_id_review.csv")   # propose → grade → confirm
 
 Stage 2 (bulk type-register pulls) is deferred pending confirmation of FTC's
 `/orgid/type/{slug}` export endpoint (see the cascade spec).
+
+## w3w
+
+what3words enrichment — add a 3-word address to any dataset of coordinates.
+
+```python
+from charity_data_tools.w3w import W3WClient, enrich_csv
+
+summary = enrich_csv("in.csv", "out.csv", lat_col="lat", lon_col="long")
+
+with W3WClient() as w3w:
+    words, err = w3w.convert_to_3wa(54.5203, -1.5478)
+```
+
+CLI:
+
+```
+python -m charity_data_tools.w3w --in in.csv --out out.csv --lat lat --lon long
+```
+
+**Public repository — never commit a key.** The key comes from the
+WHAT3WORDS_API_KEY environment variable (or passed in / prompted). Converting
+coordinates to words needs a what3words Basic+ plan; the free tier is AutoSuggest-only.
