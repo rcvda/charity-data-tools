@@ -1,5 +1,7 @@
 # charity-data-tools
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24485714.svg)](https://doi.org/10.5281/zenodo.24485714)
+
 Python utilities for enriching UK charity and funder data from three public sources:
 
 - **FTC** — [Find That Charity](https://findthatcharity.uk) REST API (org search, addresses, contact, org type, income)
