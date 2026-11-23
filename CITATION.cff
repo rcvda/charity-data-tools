@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "charity-data-tools"
+abstract: "Python utilities for enriching UK charity and funder data from Find That Charity (FTC), UK Grantmaking (UKG) and UKCAT public sources."
+type: software
+authors:
+  - family-names: "Neal"
+    given-names: "Peter"
+    orcid: "https://orcid.org/0009-0005-8101-5785"
+repository-code: "https://github.com/rcvda/charity-data-tools"
+url: "https://github.com/rcvda/charity-data-tools"
+license: MIT
+version: "0.2.0"
+date-released: "2026-11-23"
+keywords:
+  - "charity data"
+  - "Find That Charity"
+  - "VCSE sector"
+  - "open data"

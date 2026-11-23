@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-23)
 - **Guidance:** for mixed org-type lists, lead with the FTC location-universe match
   (`geo.fetch_location_candidates` + HQ confirmation), not name-reconcile — reconcile
   is charity/company biased and misses GB-EDU/GB-NHS.
