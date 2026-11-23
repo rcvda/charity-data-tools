@@ -13,7 +13,7 @@
 # Enable once per clone:  git config core.hooksPath .githooks
 # Genuine false positive:  git commit --no-verify   (editing this hook needs it)
 
-added=$(git diff --cached -U0 | grep -E '^\+' | grep -v '^\+\+\+')
+added=$(git diff --cached -U0 | grep -E '^\+' | grep -v '^+++')
 [ -z "$added" ] && exit 0
 
 # Always-on baseline: absolute home paths and an assigned API key value.
